@@ -1,0 +1,145 @@
+syntax = "proto3";
+
+package rx.distributed.raft.rpc.messages;
+
+option java_multiple_files = true;
+option java_package = "rx.distributed.raft";
+option java_outer_classname = "RaftProto";
+
+service Raft {
+    // invoked by leader to replicate log entries; also used as heartbeat
+    rpc AppendEntries (AppendEntriesRequestProto) returns (AppendEntriesResponseProto);
+
+    // invoked by candidates to gather votes
+    rpc RequestVote (VoteRequestProto) returns (VoteResponseProto);
+}
+
+message AppendEntriesRequestProto {
+    uint32 term = 1;                            // leader's term
+    ServerAddressProto leaderAddress = 2;       // used by followers to redirect requests
+    uint32 prevLogIndex = 3;                    // index of log entry immediately preceding new ones
+    uint32 prevLogTerm = 4;                     // term of prevLogIndex entry
+    repeated LogEntryProto entries = 5;         // log entries to store - empty for heartbeat; may send more for efficiency
+    uint32 leaderCommit = 6;                    // leader's commitIndex
+}
+
+message ServerAddressProto {
+    enum ServerType{
+        REMOTE = 0;
+        TESTING = 1;
+    }
+    ServerType type = 1;
+    string location = 2;
+    uint32 port = 3;
+}
+
+message LogEntryProto {
+    enum EntryType{
+        UNSPECIFIED = 0;                        // default
+        REGISTER_CLIENT = 1;
+        CLUSTER_CONFIG = 2;
+        CLIENT_COMMAND = 3;
+        NO_OP = 4;
+        KEEP_ALIVE = 5;
+        REMOVE_COMMANDS = 6;
+        EXPIRE_SESSIONS = 7;
+        REGISTER_DOWNSTREAM_CLIENT = 8;
+    }
+    EntryType type = 1;
+    uint32 term = 2;                            // term when entry was received by leader
+    bytes command = 3;                          // command to apply to state machine
+    uint64 timestamp = 4;
+    string clientId = 5;
+    uint32 sequenceNum = 6;
+    uint32 responseSequenceNum = 7;             // lowest seqNum for which the client has not yet received a response
+    repeated ServerAddressProto servers = 8;
+    repeated bytes jars = 9;                    // client jars
+}
+
+message AppendEntriesResponseProto {
+    uint32 term = 1;                            // currentTerm, for leader to update itself
+    bool success = 2;                           // true if follower contained entry matching prevLogIndex and prevLogTerm
+    uint32 matchIndex = 3;
+    ServerAddressProto address = 4;
+}
+
+message VoteRequestProto {
+    uint32 term = 1;                                // candidate's term
+    ServerAddressProto candidateAddress = 2;        // candidate requesting the vote
+    uint32 lastLogIndex = 3;                        // index of candidate's last log entry
+    uint32 lastLogTerm = 4;                         // term of candidate's last log entry
+}
+
+message VoteResponseProto {
+    uint32 term = 1;                            // currentTerm, for candidate to update itself
+    bool voteGranted = 2;                       // true if candidate received vote
+    ServerAddressProto address = 3;
+}
+
+// 6 - RPCs for client interaction
+service RaftClient {
+    // invoked by client to modify replicated state
+    rpc clientRequest(stream ClientRequestProto) returns (stream ClientResponseProto);
+
+    // invoked by new clients to open a new session, used to eliminate duplicate requests
+    rpc registerClient(RegisterClientRequestProto) returns (RegisterClientResponseProto);
+
+    // issued by clients during periods of inactivity in order to maintain their sessions
+    rpc keepAlive(KeepAliveRequestProto) returns (KeepAliveResponseProto);
+}
+
+message ClientRequestProto {
+    string clientId = 1;                        // client invoking request
+    uint32 sequenceNum = 2;                     // to eliminate duplicates
+    bytes command = 3;                          // request for statemachine (may affect state)
+    uint32 responseSequenceNum = 4;             // lowest sequence number for which the client has not yet received a response
+}
+
+message ClientResponseProto {
+    enum Status {
+        OK = 0;                                 // statemachine applied command
+        NOT_LEADER = 1;                         // server contacted was not the leader
+        SESSION_EXPIRED = 2;                    // no record of clientId found, or if response for client's sequenceNum was discarded
+        INVALID_QUERY = 3;                      // command received in a QueryRequest was not a statemachineRead
+    }
+    Status status = 1;
+    bytes response = 2;                         // statemachine output, if successful
+    ServerAddressProto leaderHint = 3;          // address of leader, if known
+    uint32 commandSeqNum = 4;
+}
+
+message RegisterClientResponseProto {
+    enum Status {
+        OK = 0;                                 // statemachine registered client
+        NOT_LEADER = 1;                         // server contacted was not the leader
+    }
+    Status status = 1;
+    string clientId = 2;                        // unique identifier for client session
+    ServerAddressProto leaderHint = 3;          // address of leader, if known
+}
+
+message KeepAliveRequestProto {
+    string clientId = 1;                        // client invoking request
+    uint32 responseSequenceNum = 2;
+}
+
+message KeepAliveResponseProto {
+    enum Status {
+        OK = 0;
+        NOT_LEADER = 1;
+        SESSION_EXPIRED = 2;
+    }
+    Status status = 1;
+    ServerAddressProto leaderHint = 2;
+}
+
+message RegisterClientRequestProto {
+    repeated bytes jars = 1;                    // client jars
+}
+
+message PersistentStateProto{
+     uint32 term = 1;
+     ServerAddressProto votedFor = 2;
+     ServerAddressProto leaderHint = 3;
+     repeated LogEntryProto logEntries = 4;
+}
